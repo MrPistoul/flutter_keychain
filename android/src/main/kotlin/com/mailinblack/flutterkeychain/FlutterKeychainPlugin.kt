@@ -184,96 +184,139 @@ interface StringEncryptor {
     fun decrypt(input: String?): String?
 }
 
-class AesStringEncryptor// get the key, which is encrypted by RSA cipher.
-@Throws(Exception::class) constructor(preferences: SharedPreferences, keyWrapper: KeyWrapper) :
-    StringEncryptor {
+class AesStringEncryptor
+@Throws(Exception::class)
+constructor(
+    preferences: SharedPreferences,
+    keyWrapper: KeyWrapper
+) : StringEncryptor {
 
-    private val ivSize = 16
+    // Taille de clé AES (16 bytes = 128 bits)
     private val keySize = 16
     private val KEY_ALGORITHM = "AES"
+
+    // Identifiant de la clé chiffrée (la clé AES) dans SharedPreferences
     private val WRAPPED_AES_KEY_ITEM = "W0n5hlJtrAH0K8mIreDGxtG"
+
     private val charset: Charset = Charset.forName("UTF-8")
     private val secureRandom: SecureRandom = SecureRandom()
 
+    // -- Paramètres GCM --
+    // Taille de l'IV recommandée pour GCM
+    private val GCM_IV_SIZE = 12
+    // Taille du tag d’authentification (en bits)
+    private val GCM_TAG_SIZE = 128
+
+    // La clé AES en clair (mais stockée chiffrée dans le Keystore)
     private var secretKey: Key
-    private val cipher: Cipher
+
+    // On instancie le Cipher une seule fois pour AES/GCM/NoPadding
+    private val cipher: Cipher = Cipher.getInstance("AES/GCM/NoPadding")
 
     init {
         val wrappedAesKey = preferences.getString(WRAPPED_AES_KEY_ITEM, null)
 
+        // 1) Si on n’a pas encore de clé AES stockée, on la crée et on l’enregistre dans SharedPreferences (chiffrée avec RSA).
+        // 2) Sinon, on la récupère et on la "déchiffre" avec RSA (KeyWrapper).
         if (wrappedAesKey == null) {
             secretKey = createKey(preferences, keyWrapper)
         } else {
-            val encrypted = Base64.decode(wrappedAesKey, Base64.DEFAULT)
+            val encryptedAesKeyBytes = Base64.decode(wrappedAesKey, Base64.DEFAULT)
             try {
-                secretKey = keyWrapper.unwrap(encrypted, KEY_ALGORITHM)
-            } catch (ingnored: Exception) {
+                secretKey = keyWrapper.unwrap(encryptedAesKeyBytes, KEY_ALGORITHM)
+            } catch (ignored: Exception) {
+                // En cas d’erreur (clé corrompue ?), on régénère la clé.
                 secretKey = createKey(preferences, keyWrapper)
             }
         }
-        cipher = Cipher.getInstance("AES/CBC/PKCS7Padding")
     }
 
-    fun createKey(preferences: SharedPreferences, keyWrapper: KeyWrapper): Key {
-        val key = ByteArray(keySize)
-        secureRandom.nextBytes(key)
-        val secretKey = SecretKeySpec(key, KEY_ALGORITHM)
-        preferences
-            .edit()
-            .putString(
-                WRAPPED_AES_KEY_ITEM,
-                Base64.encodeToString(keyWrapper.wrap(secretKey), Base64.DEFAULT)
-            )
-            .commit()
+    /**
+     * Génère une nouvelle clé AES 128 bits,
+     * la chiffre avec RSA et la stocke en base64 dans SharedPreferences.
+     */
+    private fun createKey(
+        preferences: SharedPreferences,
+        keyWrapper: KeyWrapper
+    ): Key {
+        // Génération aléatoire de la clé AES
+        val rawKey = ByteArray(keySize)
+        secureRandom.nextBytes(rawKey)
+        val secretKey = SecretKeySpec(rawKey, KEY_ALGORITHM)
+
+        // Chiffrement de la clé AES via RSA
+        val wrappedKey = keyWrapper.wrap(secretKey)
+        val wrappedKeyB64 = Base64.encodeToString(wrappedKey, Base64.DEFAULT)
+
+        // Stockage en SharedPreferences
+        preferences.edit()
+            .putString(WRAPPED_AES_KEY_ITEM, wrappedKeyB64)
+            .apply()
+
         return secretKey
     }
 
-    // input: UTF-8 cleartext string
-    // output: Base64 encoded encrypted string
+    /**
+     * Chiffre la [input] (UTF-8) en AES/GCM.
+     * Retourne une chaîne base64 (IV + ciphertext + tag).
+     */
     @Throws(Exception::class)
     override fun encrypt(input: String?): String? {
-        if (null == input) {
-            return null
-        }
+        if (input == null) return null
 
-        val iv = ByteArray(ivSize)
+        // IV de 12 octets recommandé pour GCM
+        val iv = ByteArray(GCM_IV_SIZE)
         secureRandom.nextBytes(iv)
 
-        val ivParameterSpec = IvParameterSpec(iv)
+        // Configuration de GCM (tag de 128 bits + IV)
+        val gcmSpec = GCMParameterSpec(GCM_TAG_SIZE, iv)
 
-        cipher.init(Cipher.ENCRYPT_MODE, secretKey, ivParameterSpec)
+        // Initialisation en mode ENCRYPT
+        cipher.init(Cipher.ENCRYPT_MODE, secretKey, gcmSpec)
 
-        val payload = cipher.doFinal(input.toByteArray(charset))
-        val combined = ByteArray(iv.size + payload.size)
+        // On chiffre
+        val ciphertextWithTag = cipher.doFinal(input.toByteArray(charset))
 
+        // Concatène IV + ciphertext+tag
+        val combined = ByteArray(iv.size + ciphertextWithTag.size)
         System.arraycopy(iv, 0, combined, 0, iv.size)
-        System.arraycopy(payload, 0, combined, iv.size, payload.size)
+        System.arraycopy(ciphertextWithTag, 0, combined, iv.size, ciphertextWithTag.size)
 
+        // Encodage final en base64
         return Base64.encodeToString(combined, Base64.DEFAULT)
     }
 
-    // input: Base64 encoded encrypted string
-    // output: UTF-8 cleartext string
+    /**
+     * Déchiffre la [input] base64 (contenant IV + ciphertext + tag) en AES/GCM.
+     * Retourne la chaîne UTF-8 déchiffrée.
+     */
     @Throws(Exception::class)
     override fun decrypt(input: String?): String? {
+        if (input == null) return null
 
-        if (null == input) {
+        // Décodage base64
+        val allBytes = Base64.decode(input, Base64.DEFAULT)
+
+        if (allBytes.size < GCM_IV_SIZE) {
+            // Données invalides
             return null
         }
 
-        val inputBytes = Base64.decode(input, 0)
+        // Extraction de l’IV (12 octets)
+        val iv = allBytes.copyOfRange(0, GCM_IV_SIZE)
 
-        val iv = ByteArray(ivSize)
-        System.arraycopy(inputBytes, 0, iv, 0, iv.size)
-        val ivParameterSpec = IvParameterSpec(iv)
+        // Récupération du ciphertext+tag
+        val ciphertextWithTag = allBytes.copyOfRange(GCM_IV_SIZE, allBytes.size)
 
-        val payloadSize = inputBytes.size - ivSize
-        val payload = ByteArray(payloadSize)
-        System.arraycopy(inputBytes, iv.size, payload, 0, payloadSize)
+        // Configuration GCM identique à celle utilisée pour encrypt()
+        val gcmSpec = GCMParameterSpec(GCM_TAG_SIZE, iv)
 
-        cipher.init(Cipher.DECRYPT_MODE, secretKey, ivParameterSpec)
-        val outputBytes = cipher.doFinal(payload)
-        return String(outputBytes, charset)
+        // Initialisation en mode DECRYPT
+        cipher.init(Cipher.DECRYPT_MODE, secretKey, gcmSpec)
+
+        // Déchiffrement
+        val decryptedBytes = cipher.doFinal(ciphertextWithTag)
+        return String(decryptedBytes, charset)
     }
 }
 
