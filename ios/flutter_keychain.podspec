@@ -8,9 +8,9 @@ Pod::Spec.new do |s|
   s.description      = <<-DESC
 Flutter secure storage via Keychain and Keystore
                        DESC
-  s.homepage         = 'https://github.com/jeroentrappers/flutter_keychain'
+  s.homepage         = 'https://github.com/MrPistoul/flutter_keychain'
   s.license          = { :file => '../LICENSE' }
-  s.author           = { 'Jeroen Trappers' => 'jeroen@apple.be' }
+  s.author           = { 'MrPistoul' => 'seb.dangelo@gmail.com' }
   s.source           = { :path => '.' }
   s.source_files = 'Classes/**/*'
   s.public_header_files = 'Classes/**/*.h'

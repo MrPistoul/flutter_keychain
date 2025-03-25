@@ -1,4 +1,4 @@
-package be.appmire.flutterkeychain
+package com.mailinblack.flutterkeychain
 
 import android.annotation.SuppressLint
 import android.content.Context
